@@ -6,14 +6,14 @@ Projekt-URL: <https://adla.tog.wan64.de>
 
 ## Funktionsumfang des ersten MVP
 
-- automatischer, fortsetzbarer Missionsscan ab ADCM-ID `0`
+- einmaliger, fortsetzbarer Initialscan der ADCM-IDs `0` bis `1000`
 - zusätzlicher manueller Import über eine ADCM-Mission-ID
 - rekursive Übernahme der dynamischen Unit-Hierarchie
 - idempotente, hashbasierte Snapshots in SQLite
 - klare Trennung von Standardmitglied, tatsächlicher Besetzung, Gast und Vakanz
 - Einzelmissions-Dashboards mit Organisationsbaum
 - missionsübergreifendes Dashboard mit Besetzungs- und Vakanztrend
-- Personensuche nach Name und Rolle mit Zuweisungs-, Rollen- und Entscheidungshistorie
+- Personensuche nach Name und Rolle mit Datumsfilter sowie Monats- und Jahresauswertung
 - FastAPI-Dokumentation unter `/docs` im Backend-Netz
 - Docker-Compose-Deployment hinter Traefik
 
@@ -35,7 +35,7 @@ Die Compose-Datei verbindet das Frontend mit dem vorhandenen externen Docker-Net
 
 SQLite wird unter `./data/lineup-analyzer.db` persistent gespeichert. Datenbankdateien und `.env` werden nicht versioniert.
 
-Der erste automatische Lauf prüft standardmäßig die IDs `0` bis `1000`. Der Fortschritt wird in SQLite gespeichert und nach Neustarts fortgesetzt. Anschließend werden bekannte Missionen aktualisiert und täglich die nächsten 100 IDs hinter der zuletzt gefundenen Mission geprüft. Umfang, Pause und Intervall sind über die `AUTO_IMPORT_*`-Variablen in `.env.example` konfigurierbar.
+Der automatische Initiallauf prüft genau einmal die IDs `0` bis `1000`. Der Fortschritt wird in SQLite gespeichert und nach Neustarts fortgesetzt. Sobald der Initiallauf abgeschlossen ist, finden keine automatischen ADCM-Abrufe mehr statt; weitere Missionen werden ausschließlich manuell über ihre Mission-ID importiert. Missionen mit 0 % Besetzung und als „Clantreffen“ bezeichnete Einträge werden nicht gespeichert.
 
 ## API
 
@@ -49,7 +49,6 @@ GET  /api/statistics/members
 GET  /api/statistics/members/{memberId}
 GET  /api/statistics/overall
 GET  /api/sync/status
-POST /api/sync/scan
 ```
 
 Ein fehlgeschlagener ADCM-Abruf wird vor Beginn eines neuen Snapshots abgebrochen. Bestehende Snapshots bleiben erhalten.

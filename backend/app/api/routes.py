@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -5,8 +7,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import LineupSnapshot, Mission, SyncState
 from app.services.adcm_client import AdcmError
-from app.services.automatic_import import STATE_KEY, scan_is_running, trigger_mission_scan
-from app.services.lineup_import import import_mission
+from app.services.automatic_import import STATE_KEY, scan_is_running
+from app.services.lineup_import import MissionIgnored, import_mission
 from app.services.statistics import (
     latest_snapshot,
     lineup_tree,
@@ -53,6 +55,9 @@ async def sync_mission(mission_id: int, session: Session = Depends(get_db)) -> d
         raise HTTPException(status_code=422, detail="Die Mission-ID muss positiv sein")
     try:
         snapshot, created = await import_mission(session, mission_id)
+    except MissionIgnored as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except AdcmError as exc:
         session.rollback()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -117,8 +122,15 @@ def statistics_members(
 
 
 @router.get("/statistics/members/{member_id}")
-def statistics_member(member_id: int, session: Session = Depends(get_db)) -> dict[str, object]:
-    result = member_detail(session, member_id)
+def statistics_member(
+    member_id: int,
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(status_code=422, detail="Das Von-Datum darf nicht nach dem Bis-Datum liegen")
+    result = member_detail(session, member_id, date_from, date_to)
     if result is None:
         raise HTTPException(status_code=404, detail="Mitglied wurde nicht gefunden")
     return result
@@ -155,9 +167,3 @@ def sync_status(session: Session = Depends(get_db)) -> dict[str, object]:
         "updated_at": state.updated_at,
         "last_completed_at": state.last_completed_at,
     }
-
-
-@router.post("/sync/scan", status_code=202)
-def start_sync_scan() -> dict[str, object]:
-    started = trigger_mission_scan()
-    return {"started": started, "status": "started" if started else "already_running"}

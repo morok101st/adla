@@ -39,6 +39,9 @@ export default function App() {
   const [members, setMembers] = useState<MemberStatistic[]>([]);
   const [personSearch, setPersonSearch] = useState("");
   const [person, setPerson] = useState<MemberDetail | null>(null);
+  const [personDateFrom, setPersonDateFrom] = useState("");
+  const [personDateTo, setPersonDateTo] = useState("");
+  const [personYear, setPersonYear] = useState("");
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -63,6 +66,7 @@ export default function App() {
   }, [loadCore]);
 
   useEffect(() => {
+    if (syncStatus?.initial_scan_complete) return;
     const timer = window.setInterval(() => {
       void api.syncStatus().then((status) => {
         setSyncStatus((previous) => {
@@ -76,7 +80,7 @@ export default function App() {
       });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [loadCore]);
+  }, [loadCore, syncStatus?.initial_scan_complete]);
 
   useEffect(() => {
     if (view !== "people" || members.length > 0) return;
@@ -138,26 +142,30 @@ export default function App() {
     }
   }
 
-  async function startScan() {
-    setError(null);
-    try {
-      await api.startScan();
-      setSyncStatus(await api.syncStatus());
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Scan konnte nicht gestartet werden");
-    }
-  }
-
-  async function openPerson(memberId: number) {
+  async function openPerson(memberId: number, dateFrom = personDateFrom, dateTo = personDateTo) {
     setLoading(true);
     setError(null);
     try {
-      setPerson(await api.member(memberId));
+      setPerson(await api.member(memberId, dateFrom, dateTo));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Person konnte nicht geladen werden");
     } finally {
       setLoading(false);
     }
+  }
+
+  function filterPerson(event: FormEvent) {
+    event.preventDefault();
+    if (person) void openPerson(person.member_id, personDateFrom, personDateTo);
+  }
+
+  function selectPersonYear(value: string) {
+    const dateFrom = value ? `${value}-01-01` : "";
+    const dateTo = value ? `${value}-12-31` : "";
+    setPersonDateFrom(dateFrom);
+    setPersonDateTo(dateTo);
+    setPersonYear(value);
+    if (person) void openPerson(person.member_id, dateFrom, dateTo);
   }
 
   function openMission(missionId: number) {
@@ -238,19 +246,15 @@ export default function App() {
           </form>
         </header>
 
-        <section className={`scan-status scan-${syncStatus?.status ?? "idle"}`}>
-          <div>
-            <span className="status-dot" />
-            <strong>Automatischer Import: {syncStatus?.status === "running" ? "läuft" : syncStatus?.status === "error" ? "Fehler" : "bereit"}</strong>
-            <small>
-              Geprüft: {syncStatus?.scanned_count ?? 0} · Nächste ID: {syncStatus?.next_mission_id ?? 0}
-              {syncStatus?.last_found_id != null && ` · Letzter Treffer: ${syncStatus.last_found_id}`}
-            </small>
-          </div>
-          <button onClick={() => void startScan()} disabled={syncStatus?.status === "running"}>
-            Jetzt suchen
-          </button>
-        </section>
+        {syncStatus && !syncStatus.initial_scan_complete && (
+          <section className={`scan-status scan-${syncStatus.status}`}>
+            <div>
+              <span className="status-dot" />
+              <strong>Einmaliger Initialimport: {syncStatus.status === "error" ? "Fehler" : "läuft"}</strong>
+              <small>Geprüft bis ID {syncStatus.next_mission_id - 1} von 1000</small>
+            </div>
+          </section>
+        )}
 
         {error && <div className="notice notice-error">{error}</div>}
         {loading && <div className="notice">Daten werden geladen …</div>}
@@ -335,6 +339,12 @@ export default function App() {
               {person ? (
                 <>
                   <div className="person-hero"><p className="eyebrow">Personenprofil</p><h2>{person.name}</h2><p className="muted">Die Quote beschreibt Missionen mit Zuweisung, nicht bestätigte Anwesenheit oder Abwesenheit.</p></div>
+                  <form className="period-filter" onSubmit={filterPerson}>
+                    <label>Jahr<select value={personYear} onChange={(event) => selectPersonYear(event.target.value)}><option value="">Alle Jahre</option>{person.available_years.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
+                    <label>Von<input type="date" value={personDateFrom} onChange={(event) => { setPersonDateFrom(event.target.value); setPersonYear(""); }} /></label>
+                    <label>Bis<input type="date" value={personDateTo} onChange={(event) => { setPersonDateTo(event.target.value); setPersonYear(""); }} /></label>
+                    <button>Zeitraum anwenden</button>
+                  </form>
                   <div className="person-metrics">
                     <article><span>Missionen mit Zuweisung</span><strong>{person.missions_with_assignment}</strong></article>
                     <article><span>Anteil beobachteter Missionen</span><strong>{person.assignment_share} %</strong></article>
@@ -342,6 +352,20 @@ export default function App() {
                     <article><span>Ersatzbesetzungen</span><strong>{person.replacement_assignments}</strong></article>
                   </div>
                   <div className="role-cloud">{person.roles.map((role) => <span key={role}>{role}</span>)}</div>
+                  <div className="period-sections">
+                    <section>
+                      <h3>Jahresauswertung</h3>
+                      <div className="table-scroll"><table className="data-table period-table"><thead><tr><th>Jahr</th><th>Zuweisungen</th><th>Stamm</th><th>Ersatz</th><th>Ja</th><th>Vielleicht</th></tr></thead><tbody>
+                        {person.yearly.map((item) => <tr key={item.period}><td><strong>{item.period}</strong></td><td>{item.missions_with_assignment}</td><td>{item.regular}</td><td>{item.replacement}</td><td>{item.decision_counts.yes ?? 0}</td><td>{item.decision_counts.maybe ?? 0}</td></tr>)}
+                      </tbody></table></div>
+                    </section>
+                    <section>
+                      <h3>Monatsauswertung</h3>
+                      <div className="table-scroll month-table"><table className="data-table period-table"><thead><tr><th>Monat</th><th>Zuweisungen</th><th>Stamm</th><th>Ersatz</th><th>Ja</th><th>Vielleicht</th></tr></thead><tbody>
+                        {person.monthly.map((item) => <tr key={item.period}><td><strong>{item.period}</strong></td><td>{item.missions_with_assignment}</td><td>{item.regular}</td><td>{item.replacement}</td><td>{item.decision_counts.yes ?? 0}</td><td>{item.decision_counts.maybe ?? 0}</td></tr>)}
+                      </tbody></table></div>
+                    </section>
+                  </div>
                   <div className="table-scroll">
                     <table className="data-table"><thead><tr><th>Mission</th><th>Rolle</th><th>Typ</th><th>Entscheidung</th></tr></thead>
                       <tbody>{person.history.map((item) => <tr key={`${item.mission_id}-${item.role}`} onClick={() => openMission(item.mission_id)}><td><strong>{item.mission_name}</strong><small>{formatDate(item.mission_date)}</small></td><td>{item.role}</td><td>{stateLabel[item.assignment_state]}</td><td>{item.decision ?? "Nicht übermittelt"}</td></tr>)}</tbody>

@@ -39,12 +39,15 @@ export const api = {
   lineup: (missionId: number) => request<Lineup>(`/api/lineup?mission_id=${missionId}`),
   members: (search = "") =>
     request<MemberStatistic[]>(`/api/statistics/members?search=${encodeURIComponent(search)}`),
-  member: (memberId: number) =>
-    request<MemberDetail>(`/api/statistics/members/${memberId}`),
+  member: (memberId: number, dateFrom = "", dateTo = "") => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    const query = params.size ? `?${params.toString()}` : "";
+    return request<MemberDetail>(`/api/statistics/members/${memberId}${query}`);
+  },
   overall: () => request<Overall>("/api/statistics/overall"),
   syncStatus: () => request<SyncStatus>("/api/sync/status"),
-  startScan: () =>
-    request<{ started: boolean; status: string }>("/api/sync/scan", { method: "POST" }),
   sync: (missionId: number) =>
     request<{ created: boolean }>(`/api/missions/${missionId}/sync`, { method: "POST" }),
 };

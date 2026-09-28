@@ -13,6 +13,10 @@ from app.schemas import MissionPayload, ParticipationPayload, UnitPayload
 from app.services.adcm_client import AdcmClient
 
 
+class MissionIgnored(RuntimeError):
+    pass
+
+
 def payload_hash(payload: object) -> tuple[str, str]:
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest(), raw
@@ -28,6 +32,12 @@ def assignment_state(default_member_id: int | None, participant: ParticipationPa
     if participant.memberId == default_member_id:
         return "regular"
     return "replacement"
+
+
+def _filled_positions(unit: UnitPayload) -> int:
+    return sum(
+        1 for position in unit.positions if position.assignedMemberParticipation is not None
+    ) + sum(_filled_positions(child) for child in unit.children)
 
 
 def _member_for(session: Session, participant: ParticipationPayload | None) -> Member | None:
@@ -109,6 +119,10 @@ async def import_mission(
     mission_payload, mission_raw = await client.get_mission(mission_id)
     root_id = mission_payload.lineUpUnitRoot.id or settings.adcm_root_unit_id
     unit_payload, unit_raw = await client.get_unit(root_id)
+    if "clantreffen" in mission_payload.missionName.casefold():
+        raise MissionIgnored("Clantreffen werden nicht als Mission importiert")
+    if _filled_positions(unit_payload) == 0:
+        raise MissionIgnored("Missionen mit 0 % Besetzung werden nicht importiert")
     combined = {"mission": mission_raw, "unit": unit_raw}
     source_hash, raw_json = payload_hash(combined)
 

@@ -60,7 +60,7 @@ export type MemberStatistic = {
   decision_counts: Record<string, number>;
   first_mission_date: string | null;
   last_mission_date: string | null;
-  last_participation: string;
+  last_participation: string | null;
 };
 
 export type PersonHistory = {
@@ -73,7 +73,22 @@ export type PersonHistory = {
   decision: string | null;
 };
 
-export type MemberDetail = MemberStatistic & { history: PersonHistory[] };
+export type PeriodStatistic = {
+  period: string;
+  missions_with_assignment: number;
+  regular: number;
+  replacement: number;
+  other_assignments: number;
+  decision_counts: Record<string, number>;
+};
+
+export type MemberDetail = MemberStatistic & {
+  available_years: number[];
+  period: { date_from: string | null; date_to: string | null };
+  yearly: PeriodStatistic[];
+  monthly: PeriodStatistic[];
+  history: PersonHistory[];
+};
 
 export type MissionTrend = {
   mission_id: number;

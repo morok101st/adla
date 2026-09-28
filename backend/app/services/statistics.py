@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date, datetime, time
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -266,17 +267,16 @@ def member_statistics(session: Session, search: str | None = None) -> list[dict[
     ]
 
 
-def member_detail(session: Session, member_id: int) -> dict[str, object] | None:
+def member_detail(
+    session: Session,
+    member_id: int,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict[str, object] | None:
     member = session.scalar(select(Member).where(Member.adcm_member_id == member_id))
     if member is None:
         return None
-    summary = next(
-        (item for item in member_statistics(session) if item["member_id"] == member_id),
-        None,
-    )
-    if summary is None:
-        return None
-    rows = session.execute(
+    statement = (
         select(Assignment, Position, Mission)
         .join(Position, Assignment.position_id == Position.id)
         .join(LineupSnapshot, Assignment.snapshot_id == LineupSnapshot.id)
@@ -285,11 +285,68 @@ def member_detail(session: Session, member_id: int) -> dict[str, object] | None:
             Assignment.adcm_member_id == member_id,
             Assignment.snapshot_id.in_(latest_snapshot_ids()),
         )
-        .order_by(Mission.mission_date.desc(), Mission.id.desc())
-    ).all()
-    return {
-        **summary,
-        "history": [
+    )
+    mission_statement = select(Mission)
+    if date_from is not None:
+        start = datetime.combine(date_from, time.min)
+        statement = statement.where(Mission.mission_date >= start)
+        mission_statement = mission_statement.where(Mission.mission_date >= start)
+    if date_to is not None:
+        end = datetime.combine(date_to, time.max)
+        statement = statement.where(Mission.mission_date <= end)
+        mission_statement = mission_statement.where(Mission.mission_date <= end)
+    rows = session.execute(statement.order_by(Mission.mission_date.desc(), Mission.id.desc())).all()
+    observed_missions = list(session.scalars(mission_statement))
+    observed_count = len(observed_missions)
+    all_dates = list(
+        session.scalars(select(Mission.mission_date).where(Mission.mission_date.is_not(None)))
+    )
+
+    mission_ids: set[int] = set()
+    roles: set[str] = set()
+    decisions: Counter[str] = Counter()
+    states: Counter[str] = Counter()
+    yearly: dict[str, dict[str, object]] = {}
+    monthly: dict[str, dict[str, object]] = {}
+    history: list[dict[str, object]] = []
+    first_mission_date = None
+    last_mission_date = None
+
+    def add_period(target: dict[str, dict[str, object]], period: str, mission_id: int, state: str, decision: str) -> None:
+        bucket = target.setdefault(
+            period,
+            {
+                "period": period,
+                "mission_ids": set(),
+                "regular": 0,
+                "replacement": 0,
+                "other_assignments": 0,
+                "decision_counts": Counter(),
+            },
+        )
+        bucket["mission_ids"].add(mission_id)  # type: ignore[union-attr]
+        if state == "regular":
+            bucket["regular"] += 1  # type: ignore[operator]
+        elif state == "replacement":
+            bucket["replacement"] += 1  # type: ignore[operator]
+        else:
+            bucket["other_assignments"] += 1  # type: ignore[operator]
+        bucket["decision_counts"][decision] += 1  # type: ignore[index]
+
+    for assignment, position, mission in rows:
+        mission_ids.add(mission.id)
+        roles.add(position.name)
+        decision = assignment.decision or "missing"
+        decisions[decision] += 1
+        states[assignment.assignment_state] += 1
+        if mission.mission_date is not None:
+            if first_mission_date is None or mission.mission_date < first_mission_date:
+                first_mission_date = mission.mission_date
+            if last_mission_date is None or mission.mission_date > last_mission_date:
+                last_mission_date = mission.mission_date
+            add_period(yearly, mission.mission_date.strftime("%Y"), mission.id, assignment.assignment_state, decision)
+            add_period(monthly, mission.mission_date.strftime("%Y-%m"), mission.id, assignment.assignment_state, decision)
+        history.append(
             {
                 "mission_id": mission.adcm_mission_id,
                 "mission_name": mission.name,
@@ -299,6 +356,41 @@ def member_detail(session: Session, member_id: int) -> dict[str, object] | None:
                 "assignment_state": assignment.assignment_state,
                 "decision": assignment.decision,
             }
-            for assignment, position, mission in rows
-        ],
+        )
+
+    def finalize_periods(source: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+        result = []
+        for period in sorted(source, reverse=True):
+            bucket = source[period]
+            result.append(
+                {
+                    "period": period,
+                    "missions_with_assignment": len(bucket["mission_ids"]),
+                    "regular": bucket["regular"],
+                    "replacement": bucket["replacement"],
+                    "other_assignments": bucket["other_assignments"],
+                    "decision_counts": dict(sorted(bucket["decision_counts"].items())),  # type: ignore[union-attr]
+                }
+            )
+        return result
+
+    assigned_count = len(mission_ids)
+    return {
+        "member_id": member.adcm_member_id,
+        "name": member.name,
+        "missions_with_assignment": assigned_count,
+        "assignment_share": round(assigned_count / observed_count * 100, 1) if observed_count else 0,
+        "observed_missions": observed_count,
+        "regular_assignments": states["regular"],
+        "replacement_assignments": states["replacement"],
+        "roles": sorted(roles),
+        "decision_counts": dict(sorted(decisions.items())),
+        "first_mission_date": first_mission_date,
+        "last_mission_date": last_mission_date,
+        "last_participation": last_mission_date,
+        "available_years": sorted({value.year for value in all_dates}, reverse=True),
+        "period": {"date_from": date_from, "date_to": date_to},
+        "yearly": finalize_periods(yearly),
+        "monthly": finalize_periods(monthly),
+        "history": history,
     }

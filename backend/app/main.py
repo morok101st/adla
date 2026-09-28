@@ -6,9 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
-from app.database import init_db
+from app.database import SessionLocal, init_db
 from app.config import settings
 from app.services.automatic_import import automatic_import_loop
+from app.services.maintenance import remove_ignored_missions
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -19,6 +20,10 @@ logger = logging.getLogger("adla")
 async def lifespan(_: FastAPI):
     init_db()
     logger.info("database initialized")
+    with SessionLocal() as session:
+        removed = remove_ignored_missions(session)
+        if removed:
+            logger.info("removed ignored missions count=%s", removed)
     import_task = None
     if settings.auto_import_enabled:
         import_task = asyncio.create_task(automatic_import_loop(), name="adla-auto-import")

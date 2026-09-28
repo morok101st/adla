@@ -18,9 +18,7 @@ class Settings:
         "1", "true", "yes", "on"
     }
     auto_import_initial_max_id: int = int(os.getenv("AUTO_IMPORT_INITIAL_MAX_ID", "1000"))
-    auto_import_lookahead: int = int(os.getenv("AUTO_IMPORT_LOOKAHEAD", "100"))
     auto_import_request_delay_ms: int = int(os.getenv("AUTO_IMPORT_REQUEST_DELAY_MS", "100"))
-    auto_import_interval_seconds: int = int(os.getenv("AUTO_IMPORT_INTERVAL_SECONDS", "86400"))
 
 
 settings = Settings()

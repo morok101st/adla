@@ -1,12 +1,15 @@
+from datetime import date
+
 import httpx
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from app.models import Assignment, LineupSnapshot, Position, Unit
+from app.models import Assignment, LineupSnapshot, Mission, Position, SyncState, Unit
 from app.schemas import MissionPayload, UnitPayload
 from app.services.adcm_client import AdcmClient, AdcmError
-from app.services.lineup_import import assignment_state, import_mission, payload_hash
+from app.services.lineup_import import MissionIgnored, assignment_state, import_mission, payload_hash
+from app.services.maintenance import remove_ignored_missions
 from app.services.statistics import (
     lineup_tree,
     member_detail,
@@ -46,6 +49,18 @@ class FakeClient:
     async def get_unit(self, unit_id: int):
         assert unit_id == 13378
         return UnitPayload.model_validate(UNIT_PAYLOAD), UNIT_PAYLOAD
+
+
+class FakeClantreffenClient(FakeClient):
+    async def get_mission(self, mission_id: int):
+        payload = {**MISSION_PAYLOAD, "missionName": "Clantreffen"}
+        return MissionPayload.model_validate(payload), [payload]
+
+
+class FakeEmptyClient(FakeClient):
+    async def get_unit(self, unit_id: int):
+        payload = {"id": 13378, "name": "Empty", "positions": [], "children": []}
+        return UnitPayload.model_validate(payload), payload
 
 
 def test_assignment_states_cover_vacancy_regular_replacement_and_guest():
@@ -107,6 +122,45 @@ async def test_recursive_import_snapshot_deduplication_and_statistics(session, m
     detail = member_detail(session, 10)
     assert detail is not None
     assert detail["history"][0]["role"] == "CO"
+    assert detail["available_years"] == [2026]
+    assert detail["yearly"][0]["period"] == "2026"
+    assert detail["monthly"][0]["period"] == "2026-09"
+
+    filtered = member_detail(session, 10, date(2027, 1, 1), date(2027, 12, 31))
+    assert filtered is not None
+    assert filtered["missions_with_assignment"] == 0
+    assert filtered["observed_missions"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client", [FakeClantreffenClient(), FakeEmptyClient()])
+async def test_ignored_missions_are_not_imported(session, client):
+    with pytest.raises(MissionIgnored):
+        await import_mission(session, 762, client)
+    assert session.scalar(select(func.count()).select_from(Mission)) == 0
+
+
+def test_clantreffen_cleanup_removes_existing_entry(session):
+    session.add(
+        Mission(
+            adcm_mission_id=100,
+            name="Community Clantreffen",
+            mission_date=None,
+            source_url="https://example.invalid",
+        )
+    )
+    session.commit()
+    session.add(
+        SyncState(
+            key="mission_scan",
+            imported_count=2,
+            initial_scan_complete=1,
+        )
+    )
+    session.commit()
+    assert remove_ignored_missions(session) == 1
+    assert session.scalar(select(func.count()).select_from(Mission)) == 0
+    assert session.get(SyncState, "mission_scan").imported_count == 0
 
 
 @pytest.mark.asyncio
