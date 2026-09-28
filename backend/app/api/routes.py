@@ -31,7 +31,7 @@ def health(session: Session = Depends(get_db)) -> dict[str, str]:
 @router.get("/missions")
 def missions(session: Session = Depends(get_db)) -> list[dict[str, object]]:
     rows = session.execute(
-        select(Mission, func.count(LineupSnapshot.id), func.max(LineupSnapshot.retrieved_at))
+        select(Mission, func.max(LineupSnapshot.retrieved_at))
         .outerjoin(LineupSnapshot)
         .group_by(Mission.id)
         .order_by(Mission.mission_date.desc(), Mission.id.desc())
@@ -42,10 +42,9 @@ def missions(session: Session = Depends(get_db)) -> list[dict[str, object]]:
             "name": mission.name,
             "mission_date": mission.mission_date,
             "imported_at": mission.imported_at,
-            "snapshot_count": snapshot_count,
             "last_snapshot_at": last_snapshot_at,
         }
-        for mission, snapshot_count, last_snapshot_at in rows
+        for mission, last_snapshot_at in rows
     ]
 
 
@@ -75,7 +74,7 @@ async def sync_mission(mission_id: int, session: Session = Depends(get_db)) -> d
 def _snapshot_or_404(session: Session, mission_id: int | None) -> LineupSnapshot:
     snapshot = latest_snapshot(session, mission_id)
     if snapshot is None:
-        message = f"Für Mission {mission_id} existiert kein Snapshot" if mission_id else "Es existiert noch kein Snapshot"
+        message = f"Für Mission {mission_id} existiert kein Datenstand" if mission_id else "Es existiert noch kein Datenstand"
         raise HTTPException(status_code=404, detail=message)
     return snapshot
 
@@ -126,11 +125,12 @@ def statistics_member(
     member_id: int,
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
+    role: str | None = Query(default=None, max_length=255),
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
     if date_from is not None and date_to is not None and date_from > date_to:
         raise HTTPException(status_code=422, detail="Das Von-Datum darf nicht nach dem Bis-Datum liegen")
-    result = member_detail(session, member_id, date_from, date_to)
+    result = member_detail(session, member_id, date_from, date_to, role)
     if result is None:
         raise HTTPException(status_code=404, detail="Mitglied wurde nicht gefunden")
     return result

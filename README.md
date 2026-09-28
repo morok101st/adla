@@ -1,6 +1,6 @@
 # Airborne Division Lineup Analyzer
 
-ADLA importiert Missionsaufstellungen read-only aus ADCM, speichert unveränderliche historische Snapshots in SQLite und visualisiert Besetzung, Vakanzen und Ersatzbesetzungen.
+ADLA importiert Missionsaufstellungen read-only aus ADCM, speichert den jeweils aktuellen Datenstand jeder Mission in SQLite und visualisiert Besetzung, Vakanzen und Ersatzbesetzungen.
 
 Projekt-URL: <https://adla.tog.wan64.de>
 
@@ -9,7 +9,7 @@ Projekt-URL: <https://adla.tog.wan64.de>
 - einmaliger, fortsetzbarer Initialscan der ADCM-IDs `0` bis `1000`
 - zusätzlicher manueller Import über eine ADCM-Mission-ID
 - rekursive Übernahme der dynamischen Unit-Hierarchie
-- idempotente, hashbasierte Snapshots in SQLite
+- idempotente, hashbasierte Aktualisierung des Missionsdatenstands in SQLite
 - klare Trennung von Standardmitglied, tatsächlicher Besetzung, Gast und Vakanz
 - Einzelmissions-Dashboards mit Organisationsbaum
 - missionsübergreifendes Dashboard mit Besetzungs- und Vakanztrend
@@ -51,7 +51,7 @@ GET  /api/statistics/overall
 GET  /api/sync/status
 ```
 
-Ein fehlgeschlagener ADCM-Abruf wird vor Beginn eines neuen Snapshots abgebrochen. Bestehende Snapshots bleiben erhalten.
+Ein erfolgreicher Reimport ersetzt den bisherigen Datenstand der Mission atomar. Bei einem fehlgeschlagenen ADCM-Abruf bleibt der letzte gültige Datenstand erhalten.
 
 Eine fehlende Zuweisung wird in der Personenauswertung nicht als Absage oder Abwesenheit interpretiert. Die angezeigte Personenquote bezeichnet ausschließlich den Anteil gespeicherter Missionen, in denen eine konkrete Positionszuweisung vorliegt.
 

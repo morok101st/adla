@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date
 
 import httpx
@@ -5,11 +6,15 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from app.models import Assignment, LineupSnapshot, Mission, Position, SyncState, Unit
+from app.models import Assignment, LineupSnapshot, Member, Mission, Position, SyncState, Unit
 from app.schemas import MissionPayload, UnitPayload
 from app.services.adcm_client import AdcmClient, AdcmError
 from app.services.lineup_import import MissionIgnored, assignment_state, import_mission, payload_hash
-from app.services.maintenance import remove_ignored_missions
+from app.services.maintenance import (
+    reconcile_manual_member_assignments,
+    remove_ignored_missions,
+    remove_superseded_snapshots,
+)
 from app.services.statistics import (
     lineup_tree,
     member_detail,
@@ -63,6 +68,60 @@ class FakeEmptyClient(FakeClient):
         return UnitPayload.model_validate(payload), payload
 
 
+class FakeChangedClient(FakeClient):
+    async def get_unit(self, unit_id: int):
+        payload = deepcopy(UNIT_PAYLOAD)
+        payload["positions"][0]["assignedMemberParticipation"]["decision"] = "maybe"
+        return UnitPayload.model_validate(payload), payload
+
+
+class FakeManualDefaultClient(FakeClient):
+    async def get_unit(self, unit_id: int):
+        payload = deepcopy(UNIT_PAYLOAD)
+        participation = payload["positions"][0]["assignedMemberParticipation"]
+        participation["memberId"] = None
+        participation["decision"] = "Unknown"
+        replacement = payload["positions"][1]["assignedMemberParticipation"]
+        replacement["memberId"] = None
+        replacement["decision"] = "Unknown"
+        return UnitPayload.model_validate(payload), payload
+
+
+class FakeSecondMissionClient(FakeClient):
+    async def get_mission(self, mission_id: int):
+        assert mission_id == 763
+        payload = {
+            **MISSION_PAYLOAD,
+            "missionId": 763,
+            "missionName": "Second Synthetic Mission",
+        }
+        return MissionPayload.model_validate(payload), [payload]
+
+    async def get_unit(self, unit_id: int):
+        payload = deepcopy(UNIT_PAYLOAD)
+        payload["positions"] = payload["positions"][:1]
+        payload["positions"][0]["name"] = "PL"
+        payload["children"] = []
+        return UnitPayload.model_validate(payload), payload
+
+
+class FakeZeusClient(FakeClient):
+    async def get_mission(self, mission_id: int):
+        payload = deepcopy(MISSION_PAYLOAD)
+        payload["zeusMembers"] = [
+            {
+                "id": 9001,
+                "memberParticipation": {
+                    "id": 9101,
+                    "memberId": 99,
+                    "memberName": "Zeus Member",
+                    "decision": "Unknown",
+                },
+            }
+        ]
+        return MissionPayload.model_validate(payload), [payload]
+
+
 def test_assignment_states_cover_vacancy_regular_replacement_and_guest():
     unit = UnitPayload.model_validate(UNIT_PAYLOAD)
     assert assignment_state(10, unit.positions[0].assignedMemberParticipation) == "regular"
@@ -81,6 +140,74 @@ def test_schema_accepts_unknown_decisions_and_missing_optional_fields():
 
 def test_payload_hash_is_deterministic():
     assert payload_hash({"b": 2, "a": 1})[0] == payload_hash({"a": 1, "b": 2})[0]
+
+
+@pytest.mark.asyncio
+async def test_zeus_members_count_as_participants_but_not_staffing_positions(session):
+    snapshot, _ = await import_mission(session, 762, FakeZeusClient())
+
+    overview = overview_for(session, snapshot)
+    assert overview["participants"] == 4
+    assert overview["positions"] == 4
+    assert overview["filled"] == 3
+    tree = lineup_tree(session, snapshot)
+    zeus_unit = next(child for child in tree[0]["children"] if child["name"] == "Zeuse")
+    assert zeus_unit["positions"][0]["name"] == "Zeus"
+    assert zeus_unit["positions"][0]["counts_for_staffing"] is False
+
+    overall = overall_statistics(session)
+    zeus_statistic = next(item for item in overall["unit_statistics"] if item["name"] == "Zeuse")
+    assert zeus_statistic["metric_type"] == "attendance"
+    assert zeus_statistic["average_participants"] == 1.0
+    assert zeus_statistic["average_staffing_rate"] is None
+
+    detail = member_detail(session, 99)
+    assert detail is not None
+    assert detail["missions_with_assignment"] == 1
+    assert detail["roles"] == ["Zeus"]
+
+
+@pytest.mark.asyncio
+async def test_manual_default_member_is_reconciled_as_present(session):
+    await import_mission(session, 762, FakeClient())
+    snapshot, created = await import_mission(session, 762, FakeManualDefaultClient())
+    assert created is True
+    assignment = session.scalar(
+        select(Assignment)
+        .join(Position, Assignment.position_id == Position.id)
+        .where(
+            Assignment.snapshot_id == snapshot.id,
+            Position.adcm_position_id == 1,
+        )
+    )
+    assert assignment is not None
+    assert assignment.adcm_member_id == 10
+    assert assignment.assignment_state == "regular"
+    assert assignment.decision == "Unknown"
+    replacement = session.scalar(
+        select(Assignment)
+        .join(Position, Assignment.position_id == Position.id)
+        .where(
+            Assignment.snapshot_id == snapshot.id,
+            Position.adcm_position_id == 2,
+        )
+    )
+    assert replacement is not None
+    assert replacement.adcm_member_id == 21
+    assert replacement.assignment_state == "replacement"
+    assert replacement.decision == "Unknown"
+
+    assignment.member_record_id = None
+    assignment.adcm_member_id = None
+    assignment.assignment_state = "guest"
+    session.commit()
+    assert reconcile_manual_member_assignments(session) == 1
+    session.refresh(assignment)
+    assert assignment.member_record_id == session.scalar(
+        select(Member.id).where(Member.adcm_member_id == 10)
+    )
+    assert assignment.adcm_member_id == 10
+    assert assignment.assignment_state == "regular"
 
 
 @pytest.mark.asyncio
@@ -111,13 +238,24 @@ async def test_recursive_import_snapshot_deduplication_and_statistics(session, m
     overall = overall_statistics(session)
     assert overall["mission_count"] == 1
     assert overall["average_staffing_rate"] == 75.0
-    assert overall["total_vacant_observations"] == 1
+    assert overall["missions_at_least_80_percent"] == 0
+    assert overall["average_replacement_rate"] == 25.0
+    assert overall["assignment_mix"] == {
+        "regular": 1,
+        "replacement": 1,
+        "other": 1,
+        "vacant": 1,
+    }
+    assert overall["yearly"][0]["period"] == "2026"
+    assert overall["yearly"][0]["missions"] == 1
+    assert overall["monthly"][0]["period"] == "2026-09"
 
     people = member_statistics(session, "regular")
     assert len(people) == 1
     assert people[0]["missions_with_assignment"] == 1
     assert people[0]["regular_assignments"] == 1
     assert people[0]["assignment_share"] == 100.0
+    assert people[0]["current_role"] == "CO"
 
     detail = member_detail(session, 10)
     assert detail is not None
@@ -130,6 +268,32 @@ async def test_recursive_import_snapshot_deduplication_and_statistics(session, m
     assert filtered is not None
     assert filtered["missions_with_assignment"] == 0
     assert filtered["observed_missions"] == 0
+    assert filtered["attendance_rate"] == 0
+
+    replacement, replacement_created = await import_mission(
+        session, 762, FakeChangedClient()
+    )
+    assert replacement_created is True
+    assert session.scalar(select(func.count()).select_from(LineupSnapshot)) == 1
+    assert session.scalar(select(func.count()).select_from(Assignment)) == 4
+    updated = overview_for(session, replacement)
+    assert updated["decision_counts"] == {"custom-value": 1, "maybe": 2}
+
+    await import_mission(session, 763, FakeSecondMissionClient())
+    combined = overall_statistics(session)
+    assert combined["mission_count"] == 2
+    assert combined["missions_at_least_80_percent"] == 1
+    assert combined["average_replacement_rate"] == 12.5
+    assert combined["yearly"][0]["average_staffing_rate"] == 87.5
+
+    role_detail = member_detail(session, 10, role="PL")
+    assert role_detail is not None
+    assert role_detail["roles"] == ["CO", "PL"]
+    assert role_detail["selected_role"] == "PL"
+    assert role_detail["missions_with_assignment"] == 1
+    assert role_detail["missions_in_active_period"] == 2
+    assert role_detail["attendance_rate"] == 50.0
+    assert role_detail["history"][0]["role"] == "PL"
 
 
 @pytest.mark.asyncio
@@ -161,6 +325,36 @@ def test_clantreffen_cleanup_removes_existing_entry(session):
     assert remove_ignored_missions(session) == 1
     assert session.scalar(select(func.count()).select_from(Mission)) == 0
     assert session.get(SyncState, "mission_scan").imported_count == 0
+
+
+def test_superseded_snapshot_cleanup_keeps_only_latest(session):
+    mission = Mission(
+        adcm_mission_id=101,
+        name="Synthetic Mission",
+        mission_date=None,
+        source_url="https://example.invalid",
+    )
+    session.add(mission)
+    session.flush()
+    first = LineupSnapshot(
+        mission_id=mission.id,
+        root_unit_id=1,
+        source_hash="first",
+        raw_payload="{}",
+    )
+    second = LineupSnapshot(
+        mission_id=mission.id,
+        root_unit_id=1,
+        source_hash="second",
+        raw_payload="{}",
+    )
+    session.add_all([first, second])
+    session.commit()
+
+    assert remove_superseded_snapshots(session) == 1
+    remaining = session.scalar(select(LineupSnapshot))
+    assert remaining is not None
+    assert remaining.source_hash == "second"
 
 
 @pytest.mark.asyncio

@@ -4,12 +4,12 @@ from datetime import datetime, timezone
 import hashlib
 import json
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Assignment, LineupSnapshot, Member, Mission, Position, Unit
-from app.schemas import MissionPayload, ParticipationPayload, UnitPayload
+from app.schemas import MissionPayload, ParticipationPayload, UnitPayload, ZeusMemberPayload
 from app.services.adcm_client import AdcmClient
 
 
@@ -17,19 +17,27 @@ class MissionIgnored(RuntimeError):
     pass
 
 
+ZEUS_UNIT_ID = -1
+
+
 def payload_hash(payload: object) -> tuple[str, str]:
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest(), raw
 
 
-def assignment_state(default_member_id: int | None, participant: ParticipationPayload | None) -> str:
+def assignment_state(
+    default_member_id: int | None,
+    participant: ParticipationPayload | None,
+    resolved_member_id: int | None = None,
+) -> str:
     if participant is None:
         return "vacant"
-    if participant.memberId is None:
+    member_id = resolved_member_id if resolved_member_id is not None else participant.memberId
+    if member_id is None:
         return "guest"
     if default_member_id is None:
         return "assigned"
-    if participant.memberId == default_member_id:
+    if member_id == default_member_id:
         return "regular"
     return "replacement"
 
@@ -40,14 +48,29 @@ def _filled_positions(unit: UnitPayload) -> int:
     ) + sum(_filled_positions(child) for child in unit.children)
 
 
-def _member_for(session: Session, participant: ParticipationPayload | None) -> Member | None:
-    if participant is None or participant.memberId is None:
+def _member_for(
+    session: Session,
+    participant: ParticipationPayload | None,
+) -> Member | None:
+    if participant is None:
         return None
-    member = session.scalar(select(Member).where(Member.adcm_member_id == participant.memberId))
+    member_id = participant.memberId
+    if member_id is None and participant.memberName:
+        normalized_name = participant.memberName.strip().casefold()
+        candidates = [
+            candidate
+            for candidate in session.scalars(select(Member))
+            if candidate.name.strip().casefold() == normalized_name
+        ]
+        if len(candidates) == 1:
+            member_id = candidates[0].adcm_member_id
+    if member_id is None:
+        return None
+    member = session.scalar(select(Member).where(Member.adcm_member_id == member_id))
     now = datetime.now(timezone.utc)
     if member is None:
         member = Member(
-            adcm_member_id=participant.memberId,
+            adcm_member_id=member_id,
             forum_id=participant.memberForumId,
             name=(participant.memberName or "Unbekannt").strip() or "Unbekannt",
             first_seen_at=now,
@@ -68,7 +91,7 @@ def _store_unit(
     payload: UnitPayload,
     parent_id: int | None = None,
     depth: int = 0,
-) -> None:
+) -> Unit:
     unit = Unit(
         snapshot_id=snapshot.id,
         adcm_unit_id=payload.id,
@@ -94,22 +117,99 @@ def _store_unit(
         session.flush()
         participant = item.assignedMemberParticipation
         member = _member_for(session, participant)
+        resolved_member_id = member.adcm_member_id if member else participant.memberId if participant else None
         session.add(
             Assignment(
                 snapshot_id=snapshot.id,
                 position_id=position.id,
                 member_record_id=member.id if member else None,
                 adcm_participation_id=participant.id if participant else None,
-                adcm_member_id=participant.memberId if participant else None,
+                adcm_member_id=resolved_member_id,
                 member_name=(participant.memberName or "").strip() or None if participant else None,
                 member_forum_id=participant.memberForumId if participant else None,
                 decision=(participant.decision or "").strip() or None if participant else None,
-                assignment_state=assignment_state(item.defaultMemberId, participant),
+                assignment_state=assignment_state(
+                    item.defaultMemberId, participant, resolved_member_id
+                ),
             )
         )
 
     for child in payload.children:
         _store_unit(session, snapshot, child, unit.id, depth + 1)
+    return unit
+
+
+def store_zeus_members(
+    session: Session,
+    snapshot: LineupSnapshot,
+    members: list[ZeusMemberPayload],
+) -> int:
+    participants = [item for item in members if item.memberParticipation is not None]
+    if not participants:
+        return 0
+    existing = session.scalar(
+        select(Unit).where(
+            Unit.snapshot_id == snapshot.id,
+            Unit.adcm_unit_id == ZEUS_UNIT_ID,
+        )
+    )
+    if existing is not None:
+        return 0
+    root = session.scalar(
+        select(Unit)
+        .where(Unit.snapshot_id == snapshot.id, Unit.parent_id.is_(None))
+        .order_by(Unit.id)
+    )
+    zeus_unit = Unit(
+        snapshot_id=snapshot.id,
+        adcm_unit_id=ZEUS_UNIT_ID,
+        parent_id=root.id if root else None,
+        name="Zeuse",
+        short_name=None,
+        call_sign=None,
+        depth=(root.depth + 1) if root else 0,
+    )
+    session.add(zeus_unit)
+    session.flush()
+    for item in participants:
+        participant = item.memberParticipation
+        if participant is None:
+            continue
+        position = Position(
+            snapshot_id=snapshot.id,
+            unit_id=zeus_unit.id,
+            adcm_position_id=-abs(item.id),
+            name="Zeus",
+            call_sign=None,
+            default_member_id=None,
+        )
+        session.add(position)
+        session.flush()
+        member = _member_for(session, participant)
+        resolved_member_id = member.adcm_member_id if member else participant.memberId
+        session.add(
+            Assignment(
+                snapshot_id=snapshot.id,
+                position_id=position.id,
+                member_record_id=member.id if member else None,
+                adcm_participation_id=participant.id,
+                adcm_member_id=resolved_member_id,
+                member_name=(participant.memberName or "").strip() or None,
+                member_forum_id=participant.memberForumId,
+                decision=(participant.decision or "").strip() or None,
+                assignment_state="assigned" if resolved_member_id is not None else "guest",
+            )
+        )
+    return len(participants)
+
+
+def _delete_snapshots(session: Session, snapshot_ids: list[int]) -> None:
+    if not snapshot_ids:
+        return
+    session.execute(delete(Assignment).where(Assignment.snapshot_id.in_(snapshot_ids)))
+    session.execute(delete(Position).where(Position.snapshot_id.in_(snapshot_ids)))
+    session.execute(delete(Unit).where(Unit.snapshot_id.in_(snapshot_ids)))
+    session.execute(delete(LineupSnapshot).where(LineupSnapshot.id.in_(snapshot_ids)))
 
 
 async def import_mission(
@@ -147,8 +247,17 @@ async def import_mission(
         )
     )
     if existing is not None:
+        store_zeus_members(session, existing, mission_payload.zeusMembers)
         session.commit()
         return existing, False
+
+    previous_snapshot_ids = list(
+        session.scalars(
+            select(LineupSnapshot.id).where(LineupSnapshot.mission_id == mission.id)
+        )
+    )
+    _delete_snapshots(session, previous_snapshot_ids)
+    session.flush()
 
     snapshot = LineupSnapshot(
         mission_id=mission.id,
@@ -159,6 +268,7 @@ async def import_mission(
     session.add(snapshot)
     session.flush()
     _store_unit(session, snapshot, unit_payload)
+    store_zeus_members(session, snapshot, mission_payload.zeusMembers)
     mission.imported_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(snapshot)

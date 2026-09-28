@@ -34,9 +34,15 @@ class UnitPayload(UpstreamModel):
     children: list[UnitPayload] = Field(default_factory=list)
 
 
+class ZeusMemberPayload(UpstreamModel):
+    id: int
+    memberParticipation: ParticipationPayload | None = None
+
+
 class MissionPayload(UpstreamModel):
     id: int | None = None
     missionId: int
     missionName: str = "Unbenannte Mission"
     missionDate: datetime | None = None
     lineUpUnitRoot: UnitPayload
+    zeusMembers: list[ZeusMemberPayload] = Field(default_factory=list)

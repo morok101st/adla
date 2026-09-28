@@ -3,7 +3,6 @@ export type Mission = {
   name: string;
   mission_date: string | null;
   imported_at: string;
-  snapshot_count: number;
   last_snapshot_at: string | null;
 };
 
@@ -30,6 +29,7 @@ export type Position = {
   participant: { member_id: number | null; name: string | null } | null;
   decision: string | null;
   assignment_state: "vacant" | "regular" | "replacement" | "guest" | "assigned";
+  counts_for_staffing: boolean;
 };
 
 export type Unit = {
@@ -56,6 +56,7 @@ export type MemberStatistic = {
   observed_missions: number;
   regular_assignments: number;
   replacement_assignments: number;
+  current_role: string | null;
   roles: string[];
   decision_counts: Record<string, number>;
   first_mission_date: string | null;
@@ -83,6 +84,9 @@ export type PeriodStatistic = {
 };
 
 export type MemberDetail = MemberStatistic & {
+  selected_role: string | null;
+  attendance_rate: number;
+  missions_in_active_period: number;
   available_years: number[];
   period: { date_from: string | null; date_to: string | null };
   yearly: PeriodStatistic[];
@@ -101,16 +105,52 @@ export type MissionTrend = {
   regular: number;
   replacement: number;
   staffing_rate: number;
+  replacement_rate: number;
+};
+
+export type OverallPeriod = {
+  period: string;
+  missions: number;
+  average_participants: number;
+  average_staffing_rate: number;
+  average_vacancies: number;
+  average_replacements: number;
+};
+
+export type UnitStatistic = {
+  unit_id: number;
+  name: string;
+  metric_type: "staffing" | "attendance";
+  missions: number;
+  average_staffing_rate: number | null;
+  average_participants: number | null;
+  average_positions: number | null;
+  average_vacancies: number | null;
+  average_replacements: number | null;
+  yearly: {
+    period: string;
+    missions: number;
+    average_staffing_rate: number | null;
+    average_participants: number | null;
+  }[];
 };
 
 export type Overall = {
   mission_count: number;
-  snapshot_count: number;
   average_participants: number;
   average_staffing_rate: number;
   total_filled_observations: number;
-  total_vacant_observations: number;
-  total_replacement_observations: number;
+  missions_at_least_80_percent: number;
+  average_replacement_rate: number;
+  assignment_mix: {
+    regular: number;
+    replacement: number;
+    other: number;
+    vacant: number;
+  };
+  yearly: OverallPeriod[];
+  monthly: OverallPeriod[];
+  unit_statistics: UnitStatistic[];
   trends: MissionTrend[];
 };
 

@@ -39,10 +39,11 @@ export const api = {
   lineup: (missionId: number) => request<Lineup>(`/api/lineup?mission_id=${missionId}`),
   members: (search = "") =>
     request<MemberStatistic[]>(`/api/statistics/members?search=${encodeURIComponent(search)}`),
-  member: (memberId: number, dateFrom = "", dateTo = "") => {
+  member: (memberId: number, dateFrom = "", dateTo = "", role = "") => {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
+    if (role) params.set("role", role);
     const query = params.size ? `?${params.toString()}` : "";
     return request<MemberDetail>(`/api/statistics/members/${memberId}${query}`);
   },
