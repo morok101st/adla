@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Airborne Division Lineup Analyzer
+data/*
+!data/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+frontend/node_modules/
+frontend/dist/
+!frontend/src/lib/
+!frontend/src/lib/**
+.env

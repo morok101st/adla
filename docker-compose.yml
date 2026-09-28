@@ -1,0 +1,74 @@
+name: adla
+
+services:
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    container_name: adla-backend
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      ADCM_BASE_URL: ${ADCM_BASE_URL:-https://backend.adcm.airborne-division.de}
+      ADCM_ROOT_UNIT_ID: ${ADCM_ROOT_UNIT_ID:-13378}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/lineup-analyzer.db}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
+      SYNC_TIMEOUT_SECONDS: ${SYNC_TIMEOUT_SECONDS:-15}
+      AUTO_IMPORT_ENABLED: ${AUTO_IMPORT_ENABLED:-true}
+      AUTO_IMPORT_INITIAL_MAX_ID: ${AUTO_IMPORT_INITIAL_MAX_ID:-1000}
+      AUTO_IMPORT_LOOKAHEAD: ${AUTO_IMPORT_LOOKAHEAD:-100}
+      AUTO_IMPORT_REQUEST_DELAY_MS: ${AUTO_IMPORT_REQUEST_DELAY_MS:-100}
+      AUTO_IMPORT_INTERVAL_SECONDS: ${AUTO_IMPORT_INTERVAL_SECONDS:-86400}
+    volumes:
+      - ./data:/data
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  backend-test:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      DATABASE_URL: "sqlite:///:memory:"
+      PYTHONPATH: /app
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: adla-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik_default}
+      traefik.http.routers.adla-ui.rule: Host(`adla.tog.wan64.de`)
+      traefik.http.routers.adla-ui.entrypoints: websecure
+      traefik.http.routers.adla-ui.tls: "true"
+      traefik.http.routers.adla-ui.tls.certresolver: production
+      traefik.http.routers.adla-ui.middlewares: adla-security-headers
+      traefik.http.services.adla-ui.loadbalancer.server.port: "80"
+      traefik.http.middlewares.adla-security-headers.headers.browserXssFilter: "true"
+      traefik.http.middlewares.adla-security-headers.headers.contentTypeNosniff: "true"
+      traefik.http.middlewares.adla-security-headers.headers.frameDeny: "true"
+      traefik.http.middlewares.adla-security-headers.headers.forceSTSHeader: "true"
+      traefik.http.middlewares.adla-security-headers.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.adla-security-headers.headers.stsIncludeSubdomains: "true"
+      traefik.http.middlewares.adla-security-headers.headers.stsPreload: "true"
+
+networks:
+  app:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik_default}
