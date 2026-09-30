@@ -635,7 +635,9 @@ def member_detail(
 
     assigned_count = len(mission_ids)
     missions_in_active_period = 0
-    if first_mission_date is not None and last_mission_date is not None:
+    if date_from is not None or date_to is not None:
+        missions_in_active_period = len(list(session.scalars(mission_statement)))
+    elif first_mission_date is not None and last_mission_date is not None:
         active_period_statement = mission_statement.where(
             Mission.mission_date >= first_mission_date,
             Mission.mission_date <= last_mission_date,

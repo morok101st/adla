@@ -849,7 +849,7 @@ export default function App() {
             <section className="panel person-detail">
               {person ? (
                 <>
-                  <div className="person-hero"><p className="eyebrow">Personenprofil</p><h2>{person.name}</h2><p className="muted">{person.selected_role ? `Anwesenheit und Historie für die Funktion ${person.selected_role}, gemessen von der ersten bis zur letzten Mission in dieser Funktion.` : "Die durchschnittliche Anwesenheit wird von der ersten bis zur letzten gespeicherten Mission der Person berechnet."}</p></div>
+                  <div className="person-hero"><p className="eyebrow">Personenprofil</p><h2>{person.name}</h2><p className="muted">{person.period.date_from || person.period.date_to ? "Die Anwesenheit wird über alle Missionen im ausgewählten Zeitraum berechnet." : person.selected_role ? `Anwesenheit und Historie für die Funktion ${person.selected_role}, gemessen von der ersten bis zur letzten Mission in dieser Funktion.` : "Die durchschnittliche Anwesenheit wird von der ersten bis zur letzten gespeicherten Mission der Person berechnet."}</p></div>
                   <form className="period-filter" onSubmit={filterPerson}>
                     <label>Jahr<select value={personYear} onChange={(event) => selectPersonYear(event.target.value)}><option value="">Alle Jahre</option>{person.available_years.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
                     <label>Von<input type="date" value={personDateFrom} onChange={(event) => { setPersonDateFrom(event.target.value); setPersonYear(""); }} /></label>

@@ -295,6 +295,12 @@ async def test_recursive_import_snapshot_deduplication_and_statistics(session, m
     assert role_detail["attendance_rate"] == 50.0
     assert role_detail["history"][0]["role"] == "PL"
 
+    ranged_detail = member_detail(session, 21, date(2026, 1, 1), date(2026, 12, 31))
+    assert ranged_detail is not None
+    assert ranged_detail["missions_with_assignment"] == 1
+    assert ranged_detail["missions_in_active_period"] == 2
+    assert ranged_detail["attendance_rate"] == 50.0
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client", [FakeClantreffenClient(), FakeEmptyClient()])
